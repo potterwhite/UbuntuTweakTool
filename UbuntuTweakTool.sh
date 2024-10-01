@@ -255,9 +255,10 @@ if [[ ${1,,} == "all" ]] || get_user_confirmation; then
 	#    force directory mode - Sets the permissions for the newly created directories in this share.
 	#    valid users - A list of users and groups that are allowed to access the share.'
 	
-	if ! sudo grep -q "[samba priviledge]" /etc/fstab; then
+	if ! sudo grep -q "\[samba priviledge\]" /etc/samba/smb.conf; then
 		echo -e "\tthe file is clean, writing process started"
-		sudo bash -c "echo -e '${SMB_CONTENT}' >> /etc/samba/smb.conf"
+		sudo bash -c "echo -e '${SMB_CONTENT}' | sed 's/^\t*//' >> /etc/samba/smb.conf"
+		echo -e '${FSTAB_CONTENT}' | sed 's/^\t*//' >> /etc/fstab
 	else
 		echo -e "\tthe file is corrupted, writing process aborted."
 	fi
