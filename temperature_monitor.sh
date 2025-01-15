@@ -37,6 +37,11 @@ func_print_success() {
     echo -e "${GREEN}$1${NC}"
 }
 
+func_clear_screen() {
+    tput clear
+    tput cup 0 0
+}
+
 ########################################################################
 # 3rd. Check root privileges
 func_check_root() {
@@ -149,9 +154,34 @@ func_monitor_amd_cpu() {
         modprobe k10temp 2>/dev/null
     fi
 
+    # 尝试获取更详细的 AMD 温度信息
     if sensors 2>/dev/null | grep -q "Tctl"; then
-        sensors 2>/dev/null | grep -E "Tctl|Tdie|Core[[:space:]]"
+        # 新版 AMD CPU (Ryzen)
+        echo "Main Temperature Sensors:"
+        sensors 2>/dev/null | grep -E "Tctl|Tdie"
+
+        echo -e "\nPer-Core Temperatures (if available):"
+        sensors 2>/dev/null | grep -E "Core[[:space:]]|Core[0-9]"
+
+        # 尝试从 hwmon 获取更多信息
+        if [ -d "/sys/class/hwmon" ]; then
+            for hwmon in /sys/class/hwmon/hwmon*/; do
+                if [ -f "${hwmon}name" ] && grep -q "k10temp" "${hwmon}name"; then
+                    for temp in ${hwmon}temp*_label; do
+                        if [ -f "$temp" ]; then
+                            label=$(cat "$temp")
+                            temp_input="${temp%_label}_input"
+                            if [ -f "$temp_input" ]; then
+                                value=$(echo "scale=1; $(cat $temp_input)/1000" | bc)
+                                echo "${label}: ${value}°C"
+                            fi
+                        fi
+                    done
+                fi
+            done
+        fi
     elif sensors 2>/dev/null | grep -q "k10temp"; then
+        # 旧版 AMD CPU
         sensors 2>/dev/null | grep "temp1"
     else
         func_print_warning "Cannot read AMD CPU temperatures"
@@ -235,22 +265,52 @@ func_monitor_ipmi() {
 ########################################################################
 # 99th. Main function
 main() {
-    # 初始化颜色
-    func_load_env
+    local interval=2  # 默认刷新间隔为2秒
+    local run_once=false
 
-    # 显示标题
-    echo -e "${GREEN}=================== Hardware Temperature Monitor ===================${NC}"
+    # 解析命令行参数
+    while getopts "i:o" opt; do
+        case $opt in
+            i) interval=$OPTARG ;;  # 允许自定义刷新间隔
+            o) run_once=true ;;     # 一次性运行模式
+            \?) echo "Usage: $0 [-i interval] [-o]" >&2; exit 1 ;;
+        esac
+    done
 
     # 检查root权限
     func_check_root
 
-    # 检查并安装依赖
+    # 检查并安装依赖（只需要运行一次）
     func_check_requirements
 
-    # 初始化传感器
+    # 初始化传感器（只需要运行一次）
     if ! sensors-detect --auto &>/dev/null; then
         func_print_warning "Failed to auto-detect sensors. Some readings may be unavailable."
     fi
+
+    # 初始化颜色
+    func_load_env
+
+    if [ "$run_once" = true ]; then
+        func_monitor_all
+    else
+        # 保存并隐藏光标
+        tput civis  # 隐藏光标
+        trap 'tput cnorm; exit' INT TERM  # 确保在脚本结束时恢复光标
+
+        while true; do
+            func_clear_screen
+            func_monitor_all
+            sleep $interval
+        done
+    fi
+}
+
+# 新增一个函数来包含所有监控逻辑
+func_monitor_all() {
+    # 显示标题和时间戳
+    echo -e "${GREEN}=================== Hardware Temperature Monitor ===================${NC}"
+    echo -e "Last Update: $(date '+%Y-%m-%d %H:%M:%S')\n"
 
     # 获取并显示系统信息
     local cpu_vendor=$(func_get_cpu_vendor)
@@ -287,6 +347,7 @@ main() {
     func_monitor_ipmi
 
     echo -e "\n${GREEN}======================= End of Report =======================${NC}"
+    echo -e "Press Ctrl+C to exit"
 }
 
 # 执行主函数
