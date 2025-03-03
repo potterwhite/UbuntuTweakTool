@@ -12,6 +12,7 @@ fi
 func_1_1_setup_env(){
 	ENV_K_SDK_DIR="/development/sdk"
 	ENV_K_KERNEL_IMG_PATH="${ENV_K_SDK_DIR}/kernel/boot.img"
+	ENV_K_UPDATE_IMG_PATH="${ENV_K_SDK_DIR}/output/firmware/update.img"
 	_DONOT_USE_BOARD_GMAC_IP="${BOARD_IP:-192.168.177.100}"
 	ENV_K_BOARD_BOARD_IP=${_DONOT_USE_BOARD_GMAC_IP}
 	_DONOT_USE_BUILD_SCRIPT_PATH="${ENV_K_SDK_DIR}/build.sh"	
@@ -21,7 +22,7 @@ func_1_1_setup_env(){
 	ENV_K_BOARD_SSH_NAME="boardn8"
 	ENV_K_RSYNC_CMD_4="rsync -avz --progress ${ENV_K_KERNEL_IMG_PATH} ${ENV_K_BOARD_SSH_NAME}:/tmp"
 	ENV_K_ONLINE_UPGRADE_CMD_5="ssh ${ENV_K_BOARD_SSH_NAME} \"dd if=/tmp/boot.img of=/dev/mmcblk0p3 bs=4M && sync && echo \"Upgrade Completed!\" && reboot\""
-	ENV_K_OFFLINE_UPGRADE_CMD_6="ls -lha ./output/firmware/update.img && time sudo upgrade_tool uf ./output/firmware/update.img && ls -lha ./output/firmware/update.img"
+	ENV_K_OFFLINE_UPGRADE_CMD_6="ls -lha ${ENV_K_UPDATE_IMG_PATH} && time sudo upgrade_tool uf ${ENV_K_UPDATE_IMG_PATH} && ls -lha ${ENV_K_UPDATE_IMG_PATH}"
 }
 
 func_1_2_show_usage() {
@@ -102,7 +103,7 @@ func_3_1_handle_command() {
 
     # Pattern matching for commands
     case "$input" in
-        build)  # Match any input starting with b or B
+        b|bu|bui|buil|build)  # Match any input starting with b or B
                 echo "Executing build commands..."
                 echo "Command 1: Building project"
 		func_2_1_build_kernel
