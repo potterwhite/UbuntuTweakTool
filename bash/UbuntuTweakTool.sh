@@ -319,22 +319,22 @@ echo "Samba Setup"
 echo "###############################################################################################"
 if [[ ${1,,} == "all" ]] || get_user_confirmation; then
   echo "User confirmed"
-  
+
   # 获取当前用户名
   CURRENT_USER=$(whoami)
   echo "Current username is: ${CURRENT_USER}"
   echo "Do you want to use '${CURRENT_USER}' as the Samba admin user? (Y/n)"
   read -r use_current_user
-  
+
   if [[ ${use_current_user,,} == "n" ]] || [[ ${use_current_user,,} == "no" ]]; then
     echo "Please enter the username you want to use:"
     read -r SAMBA_USER
   else
     SAMBA_USER=${CURRENT_USER}
   fi
-  
+
   echo "Using '${SAMBA_USER}' as Samba admin user"
-  
+
   # 原有的 Samba 安装和配置代码
   sudo apt update
   sudo apt install samba
@@ -349,6 +349,7 @@ if [[ ${1,,} == "all" ]] || get_user_confirmation; then
   sudo mkdir -p /mnt/sambashare_main_entry/
   sudo chgrp sambashare /mnt/sambashare_main_entry/
   sudo useradd -M -d /mnt/sambashare_main_entry/sambashare -s /usr/sbin/nologin -g sambashare sambashare
+  sudo usermod -aG sambashare ${SAMBA_USER}
   sudo mkdir -p /mnt/sambashare_main_entry/sambashare
   sudo chmod 2775 /mnt/sambashare_main_entry/sambashare
   sudo chown sambashare: /mnt/sambashare_main_entry/sambashare
@@ -358,45 +359,50 @@ if [[ ${1,,} == "all" ]] || get_user_confirmation; then
   sudo groupadd sambaadmin
   sudo useradd -M -d /mnt/sambashare_main_entry/sambaadmin -s /usr/sbin/nologin -g sambaadmin sambaadmin
   sudo usermod -aG sambaadmin ${SAMBA_USER}
+  sudo usermod -aG sambashare sambaadmin
   sudo mkdir -p /mnt/sambashare_main_entry/sambaadmin
   sudo chown sambaadmin:sambaadmin /mnt/sambashare_main_entry/sambaadmin
   sudo chmod 2770 /mnt/sambashare_main_entry/sambaadmin
+  sudo smbpasswd -a sambaadmin
+  sudo smbpasswd -e sambaadmin
 
   SMB_CONTENT='[sambaadmin]
-      path = /mnt/sambashare_main_entry/sambaadmin
-      browseable = yes
-      read only = no
-      force create mode = 660
-      force directory mode = 770
-      valid users = @sambaadmin
+	path = /mnt/sambashare_main_entry/sambaadmin
+	browseable = yes
+	read only = no
+	force create mode = 660
+	force directory mode = 770
+	valid users = @sambaadmin
 
-  [sambashare]
-      comment = Samba on Ubuntu
-      path = /mnt/sambashare_main_entry/sambashare
-      read only = yes
-      browsable = yes
-      guest ok = yes
-      create mask = 0660
-      #create mask = 0775
-      #create mask = 0600
-      directory mask = 2770
-      valid users = @sambaadmin @sambashare
-      read list = guest nobody
-      write list = @sambaadmin @sambashare
+[sambashare]
+	comment = Samba on Ubuntu
+	path = /mnt/sambashare_main_entry/sambashare
+	read only = yes
+	browsable = yes
+	guest ok = yes
+	create mask = 0660
+	#create mask = 0775
+	#create mask = 0600
+	directory mask = 2770
+	valid users = @sambaadmin @sambashare
+	read list = guest nobody
+	write list = @sambaadmin @sambashare
 
-  #   [samba priviledge] and [sambashare] - The names of the shares to use when logging in.
-  #    path - The path to the share.
-  #    browseable -  If the share is to be listed in the list of the available shares. By setting to no, other users won''t be able to see the share.
-  #    read only - If the users specified in the valid users list can write to this share.
-  #    force create mode - Sets the permissions for the files which are newly created.
-  #    force directory mode - Sets the permissions for the newly created directories in this share.
-  #    valid users - A list of users and groups that are allowed to access the share.'
+#   [samba priviledge] and [sambashare] - The names of the shares to use when logging in.
+#    path - The path to the share.
+#    browseable -  If the share is to be listed in the list of the available shares. By setting to no, other users won''t be able to see the share.
+#    read only - If the users specified in the valid users list can write to this share.
+#    force create mode - Sets the permissions for the files which are newly created.
+#    force directory mode - Sets the permissions for the newly created directories in this share.
+#    valid users - A list of users and groups that are allowed to access the share.'
   SMB_FILE="/etc/samba/smb.conf"
 
-  if ! sudo grep -q "\[samba priviledge\]" ${SMB_FILE}; then
+  if ! sudo grep -q "\[sambaadmin\]" ${SMB_FILE}; then
     echo -e "\tthe file is clean, writing process started"
-    sudo bash -c "echo -e '${SMB_CONTENT}' | sed 's/^\t*//' >> /etc/samba/smb.conf"
-    sudo echo -e '${FSTAB_CONTENT}' | sudo sed 's/^\t*//' >> ${SMB_FILE}
+    # sudo bash -c "echo -e '${SMB_CONTENT}' | sed 's/^\t*//' >> /etc/samba/smb.conf"
+	echo -e "${SMB_CONTENT}" | sed 's/^\t*//' | sudo tee -a "${SMB_FILE}" > /dev/null
+    # sudo echo -e '${FSTAB_CONTENT}' | sudo sed 's/^\t*//' >> ${SMB_FILE}
+
   else
     echo -e "\tthe file ${SMB_FILE} is corrupted, writing process aborted."
   fi
