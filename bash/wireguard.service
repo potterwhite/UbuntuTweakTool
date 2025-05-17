@@ -1,0 +1,21 @@
+[Unit]
+Description=WireGuard Auto Start
+After=network-online.target
+Wants=network-online.target
+PartOf=syncthing.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wg-quick up wg0
+ExecStop=/usr/bin/wg-quick down wg0
+#Restart=always
+RemainAfterExit=yes
+User=root
+Group=root
+#Environment="CONFIG=/etc/happy-unicorns/config.conf"
+#WorkingDirectory=/usr/lib/happy-unicorns
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+#WantedBy=multi-user.target

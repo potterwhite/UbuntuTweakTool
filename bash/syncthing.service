@@ -1,0 +1,17 @@
+[Unit]
+Description=Happy Unicorns Service
+After=network-online.target wireguard.service
+Wants=network-online.target wireguard.service
+
+[Service]
+ExecStart=/usr/bin/syncthing
+Restart=always
+User=james
+Group=james
+#Environment="CONFIG=/etc/happy-unicorns/config.conf"
+#WorkingDirectory=/usr/lib/happy-unicorns
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

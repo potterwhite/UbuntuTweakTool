@@ -1,0 +1,13 @@
+[Unit]
+Description=Harbor Container Registry
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/harbor_startup.sh restart
+ExecStop=/usr/local/bin/harbor_startup.sh stop
+
+[Install]
+WantedBy=multi-user.target
