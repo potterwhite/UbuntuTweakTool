@@ -26,6 +26,7 @@ main(){
 
     echo "Attempting to download and embed thumbnail for: $1"
     yt-dlp \
+	--cookies-from-browser firefox \
         -f "bestvideo+bestaudio/best" \
         --merge-output-format mp4 \
         --embed-thumbnail \
