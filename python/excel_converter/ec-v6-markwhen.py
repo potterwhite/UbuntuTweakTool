@@ -3,6 +3,7 @@ import re
 import shutil
 import sys
 from datetime import datetime, timedelta
+
 import pandas as pd
 
 # ==============================================================================
@@ -32,6 +33,7 @@ CONFIG = {
     "SEPARATOR": ",",  # Separator for multi-value cells
 }
 
+
 # ==============================================================================
 # SECTION 2: HELPER FUNCTIONS
 # ==============================================================================
@@ -44,6 +46,7 @@ def func_1_1_clean_directory(path):
             pass
     os.makedirs(path, exist_ok=True)
 
+
 def func_1_2_format_date(date_obj):
     """Converts Excel date to YYYY-MM-DD string."""
     if pd.isnull(date_obj):
@@ -53,9 +56,11 @@ def func_1_2_format_date(date_obj):
     except:
         return ""
 
+
 def func_1_3_sanitize_filename(filename):
     """Sanitizes strings to be safe filenames."""
     return "".join([c for c in str(filename) if c.isalnum() or c in " -_."]).strip()
+
 
 def func_1_4_parse_multi_value(cell_value):
     """Splits string by separator into a list."""
@@ -63,11 +68,13 @@ def func_1_4_parse_multi_value(cell_value):
         return []
     return [x.strip() for x in str(cell_value).split(CONFIG["SEPARATOR"]) if x.strip()]
 
+
 def func_1_5_calculate_end_date_from_duration(start_str, duration_val):
     """
     通用计算函数：输入开始日期字符串和工期，返回结束日期字符串。
-    General date calcalation function: input start-date and duration
-    逻辑：End = Start + Duration
+    Logic:
+      - If duration >= 1: End = Start + (Duration - 1)  [Inclusive Logic]
+      - If duration < 1:  End = Start                   [Same Day / Milestone]
     """
     # 1. Validate start date
     if not start_str or pd.isnull(start_str) or str(start_str).strip() == "":
@@ -77,15 +84,28 @@ def func_1_5_calculate_end_date_from_duration(start_str, duration_val):
     try:
         days = float(duration_val)
     except (ValueError, TypeError):
-        days = 0.0 # 格式错误或空值，默认为0
+        days = 0.0  # 格式错误或空值，默认为0
 
     # 3. Calculate end date
     try:
-        s_date = datetime.strptime(str(start_str).split(' ')[0], '%Y-%m-%d')
-        e_date = s_date + timedelta(days=days)
-        return e_date.strftime('%Y-%m-%d')
+        s_date = datetime.strptime(str(start_str).split(" ")[0], "%Y-%m-%d")
+
+        # [FIXED LOGIC]
+        # 如果工期是 3 天 (Dec 1, 2, 3)，数学上应该加 2 天 (Dec 1 + 2 = Dec 3)
+        # 如果工期是 1 天 (Dec 1)，数学上应该加 0 天 (Dec 1 + 0 = Dec 1)
+        # 如果工期是 0 天 (里程碑)，加 0 天
+
+        if days >= 1.0:
+            add_days = days - 1.0
+        else:
+            # 处理工期为 0 或者 0.5 天的情况，不减 1，否则日期会倒退
+            add_days = 0.0
+
+        e_date = s_date + timedelta(days=add_days)
+        return e_date.strftime("%Y-%m-%d")
     except Exception:
         return start_str
+
 
 # ==============================================================================
 # SECTION 3: CORE LOGIC - MARKDOWN GENERATOR (The Database)
@@ -141,7 +161,9 @@ def func_2_1_generate_markdown_db(df):
         for pid in pred_ids:
             clean_pid = pid.split(".")[0].strip()
             if clean_pid in id_map:
-                pred_links.append(f"[[{func_1_3_sanitize_filename(id_map[clean_pid])}]]")
+                pred_links.append(
+                    f"[[{func_1_3_sanitize_filename(id_map[clean_pid])}]]"
+                )
 
         blocked_by_yaml = f"[{', '.join(pred_links)}]"
 
@@ -204,8 +226,8 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
     required_first = CONFIG["COL_PLAN_START"]
     required_second = CONFIG["COL_DURATION"]
     valid_df = df[
-        (df[required_first].astype(str).str.strip() != "") &
-        (df[required_second].astype(str).str.strip() != "")
+        (df[required_first].astype(str).str.strip() != "")
+        & (df[required_second].astype(str).str.strip() != "")
     ]
 
     dropped_count = len(df) - len(valid_df)
@@ -213,7 +235,7 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
         print(f"[INFO] 过滤掉 {dropped_count} 行无效数据 (缺少计划时间或工作量)")
 
     # filter the duration number, must be positive integer
-    duration_numeric = pd.to_numeric(valid_df[required_second], errors='coerce')
+    duration_numeric = pd.to_numeric(valid_df[required_second], errors="coerce")
     valid_df = valid_df[duration_numeric > 0]
 
     # 3. Process by Phase (Groups)
@@ -231,19 +253,20 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
         for idx, row in tasks.iterrows():
             task_name = str(row.get(CONFIG["COL_TASK"], "Task")).strip()
             status = str(row.get(CONFIG["COL_STATUS"], "")).strip()
-            
+
             plan_start = func_1_2_format_date(row.get(CONFIG["COL_PLAN_START"]))
             plan_end = func_1_2_format_date(row.get("Calibrated_Plan_End"))
-            
+
             actual_start = func_1_2_format_date(row.get(CONFIG["COL_ACTUAL_START"]))
             actual_end = func_1_2_format_date(row.get(CONFIG["COL_ACTUAL_END"]))
-            
+
             try:
                 # task_duration = pd.to_numeric(row[CONFIG["COL_DURATION"]], errors='coerce')
                 task_duration = float(row.get(CONFIG["COL_DURATION"], 0.0))
-            except:
+            except Exception as e:
                 task_duration = 0.0
-            
+                print(f"Error converting duration to float: {e}")
+
             # Logic: Default plan_end date to plan_start date if missing
             if not plan_start:
                 continue
@@ -253,13 +276,13 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
             # Logic: from now on, there are no plan and actual dates but only draw dates(draw_start, draw_end)
             draw_start = ""
             draw_end = ""
-            
+            tag = "#todo"
+
             if actual_start:
                 draw_start = actual_start
                 # have-actual_start
                 if not actual_end:
-                    # b. have-actual_start, no-actual_end                    
-                    draw_end = draw_start + task_duration
+                    # b. have-actual_start, no-actual_end
                     try:
                         s_date = datetime.strptime(actual_start, "%Y-%m-%d")
                         e_date = s_date + timedelta(days=task_duration)
@@ -267,33 +290,44 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
                     except Exception as e:
                         print(f"[WARN] Date calc failed for {task_name}: {e}")
                         draw_end = draw_start
+                    # ----------------
+                    print(f"plan_end = {plan_end}, today = {today}")
+                    if plan_end < today:
+                        tag = "#delayed"
+                    else:
+                        tag = "#active"
                 else:
                     # d. have-actual_start, have-actual_end
                     draw_end = actual_end
+                    # ----------------
+                    tag = "#done"
             else:
                 # no-actual_start
                 # a. no-actual_start, no-actual_end
                 if not actual_end:
                     draw_start = plan_start
                     draw_end = plan_end
+                    # ----------------
+                    if plan_end < today:
+                        tag = "#delayed"
                 else:
                     # c. no-actual_start, have-actual_end
                     # result: illegal
                     print(f"[WARN] Illegal Data (End without Start): {task_name}")
-                    continue 
+                    continue
 
             # Logic: Determine Tags/Colors
-            tag = "#todo"
-            if "完成" in status:
-                tag = "#done"
-            elif "进行" in status:
-                tag = "#active"
-            elif "未开始" in status:
-                tag = "#todo"
+            # if not tag:
+            #     if "完成" in status:
+            #         tag = "#done"
+            #     elif "进行" in status:
+            #         tag = "#active"
+            #     elif "未开始" in status:
+            #         tag = "#todo"
 
-            # Logic: Delay Detection (If not done AND plan_end date < today)
-            if plan_end < today and "完成" not in status:
-                tag = "#delayed"
+            #     # Logic: Delay Detection (If not done AND plan_end date < today)
+            #     if plan_end < today and "完成" not in status:
+            #         tag = "#delayed"
 
             # Logic: Milestone Detection (Start == End)
             if draw_start == draw_end:
@@ -318,6 +352,7 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
 
     print(f"[SUCCESS] Markwhen file created at: {mw_path}")
 
+
 def func_2_1_data_import_and_preprocess():
     # 1. excel file existance check
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -336,19 +371,21 @@ def func_2_1_data_import_and_preprocess():
 
     # 3. Pre-process Data
     print("[INFO] Pre-calculating Plan End Dates...")
-    df['Calibrated_Plan_End'] = df.apply(
+    df["Calibrated_Plan_End"] = df.apply(
         lambda row: func_1_5_calculate_end_date_from_duration(
             func_1_2_format_date(row.get(CONFIG["COL_PLAN_START"])),
-            row.get(CONFIG["COL_DURATION"])
+            row.get(CONFIG["COL_DURATION"]),
         ),
-        axis = 1
+        axis=1,
     )
 
     return df
 
+
 # ==============================================================================
 # SECTION 5: MAIN EXECUTION
 # ==============================================================================
+
 
 def main():
     print("==================================================================")
