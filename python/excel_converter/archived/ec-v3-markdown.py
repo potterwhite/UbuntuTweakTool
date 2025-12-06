@@ -4,6 +4,8 @@ import shutil
 import re
 import sys
 from datetime import datetime
+from colorama import Fore, Style, init
+
 
 # ==============================================================================
 # SECTION 1: CONFIGURATION
@@ -224,16 +226,18 @@ created_at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 # ==============================================================================
 
 def main():
-    print("===================================================")
-    print("   Excel to Obsidian Converter (Strict Logic)      ")
-    print("===================================================")
+    print(f"{Fore.GREEN}{'=' * 40}")
+    print(f"{Fore.GREEN}   Excel to Obsidian Converter (Strict Logic)")
+    print(f"{Fore.GREEN}{'=' * 40}\n")
 
     # 1. Validate Input File
-    excel_path = CONFIG["INPUT_EXCEL_PATH"]
-    if not os.path.exists(excel_path):
-        print(f"[ERROR] Excel file not found at: {excel_path}")
-        print("Please check the 'INPUT_EXCEL_PATH' in CONFIG section.")
-        return
+    while True:
+        excel_path = get_input_path("请输入 Excel 文件路径 (支持拖拽):")
+        if os.path.exists(excel_path) and excel_path.endswith(
+            (".xlsx", ".xls")
+        ):
+            break
+        print_error("文件不存在或格式不正确，请重试。")
 
     # 2. Load Excel Data
     try:
