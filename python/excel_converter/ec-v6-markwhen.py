@@ -12,7 +12,7 @@ import pandas as pd
 # ==============================================================================
 CONFIG = {
     # 1. File Paths
-    "INPUT_EXCEL_PATH": "/home/james/pm_baytto/docs/main/pm-q6-v20251215.xlsx",  # <--- Change to your Excel filename
+    "INPUT_EXCEL_PATH": "/mnt/2tb_wd_purpleSurveillance_hdd/Administration/pm_baytto/docs/single_project_tables/Q6/pm-q6-v20251215.xlsx",  # <--- Change to your Excel filename
     "OUTPUT_MW_FOLDER": "/home/james/syncthing/ObsidianVault/PARA-Vault/2_AREA/05-Area-Job-Baytto/Project_用Obsidian做ProjectManagement系统/products/q6/01_Dashboard",  # Folder for individual task notes
     "OUTPUT_MD_FOLDER": "/home/james/syncthing/ObsidianVault/PARA-Vault/2_AREA/05-Area-Job-Baytto/Project_用Obsidian做ProjectManagement系统/products/q6/02_Data_Imports",  # Folder for the Markwhen Gantt file
     "MW_FILENAME": "Q6_Project_Gantt.mw",  # The standalone Markwhen file
@@ -100,6 +100,8 @@ def func_1_5_calculate_end_date_from_duration(start_str, duration_val):
         else:
             # 处理工期为 0 或者 0.5 天的情况，不减 1，否则日期会倒退
             add_days = 0.0
+
+        print(f"\tadd_days = {add_days} for duration = {duration_val}")
 
         e_date = s_date + timedelta(days=add_days)
         return e_date.strftime("%Y-%m-%d")
@@ -232,11 +234,11 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
 
     dropped_count = len(df) - len(valid_df)
     if dropped_count > 0:
-        print(f"[INFO] 过滤掉 {dropped_count} 行无效数据 (缺少计划时间或工作量)")
+        print(f"[INFO] 过滤掉 {dropped_count} 行无效数据 (缺少\"{required_first}\"或\"{required_second}\")")
 
     # filter the duration number, must be positive integer
     duration_numeric = pd.to_numeric(valid_df[required_second], errors="coerce")
-    valid_df = valid_df[duration_numeric > 0]
+    valid_df = valid_df[duration_numeric >= 0]
 
     # 3. Process by Phase (Groups)
     phases = valid_df[CONFIG["COL_PHASE"]].unique()
@@ -251,8 +253,11 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
         tasks = valid_df[valid_df[CONFIG["COL_PHASE"]] == phase]
 
         for idx, row in tasks.iterrows():
+            # -----------------------------------------
+            # Extract Data
+            # -----------------------------------------
             task_name = str(row.get(CONFIG["COL_TASK"], "Task")).strip()
-            status = str(row.get(CONFIG["COL_STATUS"], "")).strip()
+            # status = str(row.get(CONFIG["COL_STATUS"], "")).strip()
 
             plan_start = func_1_2_format_date(row.get(CONFIG["COL_PLAN_START"]))
             plan_end = func_1_2_format_date(row.get("Calibrated_Plan_End"))
@@ -278,6 +283,9 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
             draw_end = ""
             tag = "#todo"
 
+            print(f"\ntask_name = {task_name}:")
+            # print(f"\tduration = , plan_start = {plan_start}, plan_end = {plan_end}, actual_start = {actual_start}, actual_end = {actual_end}")
+
             if actual_start:
                 draw_start = actual_start
                 # have-actual_start
@@ -287,12 +295,13 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
                         # s_date = datetime.strptime(actual_start, "%Y-%m-%d")
                         # e_date = s_date + timedelta(days=task_duration)
                         # draw_end = e_date.strftime("%Y-%m-%d")
+                        print(f"\tneed to recalculate the draw_end date.")
                         draw_end = func_1_5_calculate_end_date_from_duration(actual_start, task_duration)
                     except Exception as e:
                         print(f"[WARN] Date calc failed for {task_name}: {e}")
                         draw_end = draw_start
                     # ----------------
-                    print(f"plan_end = {plan_end}, today = {today}")
+                    print(f"\tplan_end = {plan_end}, today = {today}")
                     if plan_end < today:
                         tag = "#delayed"
                     else:
@@ -332,7 +341,9 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
 
             # Logic: Milestone Detection (Start == End)
             if draw_start == draw_end:
+                print(f"[INFO] Milestone detected: {task_name}")
                 tag = "#milestone"
+            print(f"\ttag = {tag}")
 
             # Write Line: YYYY-MM-DD / YYYY-MM-DD: Task Name #tag
             mw_content += f"{draw_start} / {draw_end}: {task_name} {tag}\n"
@@ -351,7 +362,7 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
     with open(mw_path, "w", encoding="utf-8") as f:
         f.write(mw_content)
 
-    print(f"[SUCCESS] Markwhen file created at: {mw_path}")
+    print(f"\n[SUCCESS] Markwhen file created at: {mw_path}")
 
 
 def func_2_1_data_import_and_preprocess():
