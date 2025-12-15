@@ -12,7 +12,7 @@ import pandas as pd
 # ==============================================================================
 CONFIG = {
     # 1. File Paths
-    "INPUT_EXCEL_PATH": "pm-q6-v1.3.xlsx",  # <--- Change to your Excel filename
+    "INPUT_EXCEL_PATH": "/home/james/pm_baytto/docs/main/pm-q6-v20251215.xlsx",  # <--- Change to your Excel filename
     "OUTPUT_MW_FOLDER": "/home/james/syncthing/ObsidianVault/PARA-Vault/2_AREA/05-Area-Job-Baytto/Project_用Obsidian做ProjectManagement系统/products/q6/01_Dashboard",  # Folder for individual task notes
     "OUTPUT_MD_FOLDER": "/home/james/syncthing/ObsidianVault/PARA-Vault/2_AREA/05-Area-Job-Baytto/Project_用Obsidian做ProjectManagement系统/products/q6/02_Data_Imports",  # Folder for the Markwhen Gantt file
     "MW_FILENAME": "Q6_Project_Gantt.mw",  # The standalone Markwhen file
@@ -284,9 +284,10 @@ description: Auto-generated from Excel on {datetime.now().strftime("%Y-%m-%d %H:
                 if not actual_end:
                     # b. have-actual_start, no-actual_end
                     try:
-                        s_date = datetime.strptime(actual_start, "%Y-%m-%d")
-                        e_date = s_date + timedelta(days=task_duration)
-                        draw_end = e_date.strftime("%Y-%m-%d")
+                        # s_date = datetime.strptime(actual_start, "%Y-%m-%d")
+                        # e_date = s_date + timedelta(days=task_duration)
+                        # draw_end = e_date.strftime("%Y-%m-%d")
+                        draw_end = func_1_5_calculate_end_date_from_duration(actual_start, task_duration)
                     except Exception as e:
                         print(f"[WARN] Date calc failed for {task_name}: {e}")
                         draw_end = draw_start
