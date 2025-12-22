@@ -1,1 +1,6 @@
 **/.venv
+**/.~lock.*.xlsx#
+**/*.xlsx
+
+**/01_Dashboard
+**/02_Data_Imports
