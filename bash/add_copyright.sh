@@ -303,7 +303,7 @@ func_2_7_execute_apply() {
 
     find_args+=("-type" "f" "(")
     find_args+=("-name" "*.cpp" "-o" "-name" "*.c" "-o" "-name" "*.cc" "-o" "-name" "*.h" "-o" "-name" "*.hpp")
-    find_args+=("-o" "-name" "CMakeLists.txt" "-o" "-name" "*.go" "-o" "-name" "*.java" "-o" "-name" "*.py")
+    find_args+=("-o" "-name" "CMakeLists.txt" "-o" "-name" "*.go" "-o" "-name" "*.java" "-o" "-name" "*.py" "-o" "-name" "*.yml" "-o" "-name" "*.yaml")
     find_args+=(")" "-print")
 
     # Construct the base command
