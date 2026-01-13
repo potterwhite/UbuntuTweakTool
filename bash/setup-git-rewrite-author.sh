@@ -158,9 +158,14 @@ fn_confirm_and_rewrite() {
   echo "--> Rewriting history for commits and tags... This may take a while."
 
   local commit_callback_code="
-if commit.author_email != b'""$CORRECT_EMAIL""':
-  commit.author_name = b'""$CORRECT_NAME""'
-  commit.author_email = b'""$CORRECT_EMAIL""'
+name=b'""$CORRECT_NAME""'
+email=b'""$CORRECT_EMAIL""'
+
+if commit.author_email != name:
+  commit.author_name = name 
+  commit.author_email = email 
+  commit.committer_name = name
+  commit.committer_email = email
 "
   local tag_callback_code="
 if tag.tagger_email != b'""$CORRECT_EMAIL""':
