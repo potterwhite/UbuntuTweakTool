@@ -1,0 +1,67 @@
+export CONFIG_DIR="${HOME}/.claude-code-env_profiles"
+export SCRIPT_DIR="${HOME}/bin"
+export SCRIPT_NAME="llm-switch"
+export ALIAS_NAME="llms"
+
+mkdir -p "${CONFIG_DIR}" "${SCRIPT_DIR}" && \
+cat > ${CONFIG_DIR}/openrouter.env << 'EOF'
+export OPENROUTER_API_KEY=""
+export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+export ANTHROPIC_API_KEY="" # Important: Must be explicitly empty
+EOF
+
+cat > ${SCRIPT_DIR}/${SCRIPT_NAME} << EOF
+#!/usr/bin/env bash
+
+if [ x"\${V}" == x"1" ];then
+	set -x
+fi
+
+ENV_DIR="${CONFIG_DIR}"
+
+list_envs() {
+    ls "\$ENV_DIR" 2>/dev/null | sed 's/.env$//'
+}
+
+switch_env() {
+    local env_name="\$1"
+    local env_file="\$ENV_DIR/\${env_name}.env"
+
+    if [ ! -f "\$env_file" ]; then
+        echo "Env '\$env_name' not found."
+        echo "Available:"
+        list_envs
+        return 1
+    fi
+
+    # 清理旧变量
+    if [ -n "\$CURRENT_ENV_FILE" ] && [ -f "\$CURRENT_ENV_FILE" ]; then
+        unset \$(grep -oE '^export [A-Za-z_][A-Za-z0-9_]*' "\$CURRENT_ENV_FILE" | awk '{print \$2}')
+    fi
+
+    # 加载新环境
+    set -a
+    source "\$env_file"
+    set +a
+
+    export CURRENT_ENV_FILE="\$env_file"
+    export CURRENT_ENV_NAME="\$env_name"
+
+    echo "Switched to: \$env_name"
+}
+
+if [ -z "\$1" ]; then
+    echo "Usage: ${ALIAS_NAME} <env>"
+    echo "Available:"
+    list_envs
+else
+    switch_env "\$1"
+fi
+EOF
+
+chmod +x "${SCRIPT_DIR}/${SCRIPT_NAME}" && \
+grep -q "alias ${ALIAS_NAME}=" ~/.bashrc || echo "alias ${ALIAS_NAME}=\"source ${SCRIPT_DIR}/${SCRIPT_NAME}\"" >> ~/.bashrc && \
+#grep -q "export PATH=\"${SCRIPT_DIR}:$PATH\"" ~/.bashrc || echo "export PATH=\"${SCRIPT_DIR}:$PATH\"" >> ~/.bashrc && \
+source ~/.bashrc && \
+echo -e "\n\n================\n✅ Done. Try: ${ALIAS_NAME} openrouter\n================"
