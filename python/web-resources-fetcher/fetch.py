@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 Web Resources Fetcher
-- 弹出浏览器让你登录（如果站点需要）
-- 自动检测登录状态
-- 提取页面中所有下载链接并逐个下载
+- Opens a browser for login if the site requires authentication
+- Auto-detects login status
+- Extracts all download links from the page and downloads them
 
-用法: python3 fetch.py <url> [--output <dir>] [--headless] [--no-login]
+Usage: python3 fetch.py <url> [--output <dir>] [--headless] [--no-login]
 """
 import argparse
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,114 +20,144 @@ from playwright.async_api import async_playwright
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Web Resources Fetcher - 从网页提取并下载所有资源",
+        description="Web Resources Fetcher - extract and download all resources from a web page",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
-示例:
-  %(prog)s https://developer.nvidia.com/embedded/downloads#?search=orin%%20nx
+Examples:
+  %(prog)s https://example.com/downloads
   %(prog)s https://example.com/downloads --output ~/my-downloads
   %(prog)s https://example.com/files --headless --no-login
         """,
     )
-    parser.add_argument("url", help="要抓取的网页 URL")
+    parser.add_argument("url", help="Target web page URL")
     parser.add_argument(
         "-o", "--output",
         default=None,
-        help="下载目录（默认: ./downloads）",
+        help="Download directory (default: ./downloads)",
     )
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="无头模式运行浏览器（不显示窗口）",
+        help="Run browser in headless mode (no window)",
     )
     parser.add_argument(
         "--no-login",
         action="store_true",
-        help="跳过登录等待，直接开始抓取",
+        help="Skip login detection, scrape directly",
     )
     return parser.parse_args()
 
 
-async def wait_for_login(page, timeout_sec=300, skip=False):
-    """等待用户登录，通过 URL 变化或页面内容检测"""
+async def wait_for_login(page, target_url, timeout_sec=300, skip=False):
+    """Wait for user to log in. Detects via URL change or page content."""
     if skip:
-        print("  跳过登录检测")
+        print("  Skipping login detection")
         return True
 
     print("\n" + "=" * 50)
-    print("  浏览器已打开，请登录账号")
-    print("  脚本会自动检测登录状态，不用操作终端")
+    print("  Browser is open. Please log in if required.")
+    print("  Auto-detecting login status...")
     print("=" * 50 + "\n")
 
-    await page.goto("https://developer.nvidia.com/login")
+    # Navigate to the target URL; if it redirects to a login page, wait there
+    await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+    await asyncio.sleep(2)
 
+    # Check if we're already on the target page (no login needed)
+    current = page.url
+    login_indicators = ["/login", "/signin", "/sign-in", "/auth", "accounts."]
+    if not any(ind in current.lower() for ind in login_indicators):
+        print(f"  Page loaded directly, no login required.\n")
+        return True
+
+    # We're on a login page — wait for redirect back to target
     for i in range(timeout_sec):
         try:
             url = page.url
-            # 方法1: URL 离开登录页
-            if "/login" not in url.lower() and "accounts.nvidia.com" not in url.lower():
-                print(f"\n  ✓ 登录成功！(跳转到: {url[:60]})\n")
+            if not any(ind in url.lower() for ind in login_indicators):
+                print(f"\n  Login successful! (redirected to: {url[:60]})\n")
                 return True
-            # 方法2: 页面内容包含登录标志
+            # Also check page content for login indicators
             has_session = await page.evaluate("""() => {
                 const t = (document.body.innerText || '').toLowerCase();
                 return t.includes('sign out') || t.includes('log out') ||
-                       t.includes('my account') || t.includes('dashboard') ||
-                       t.includes('welcome');
+                       t.includes('my account') || t.includes('dashboard');
             }""")
             if has_session:
-                print(f"\n  ✓ 登录成功！\n")
+                print(f"\n  Login successful!\n")
                 return True
         except Exception:
             pass
         if i % 5 == 0:
-            sys.stdout.write(f"\r  等待登录... {i}秒")
+            sys.stdout.write(f"\r  Waiting for login... {i}s")
             sys.stdout.flush()
         await asyncio.sleep(1)
 
-    print("\n  ⚠ 超时，继续尝试下载...\n")
+    print("\n  Timeout reached, attempting download anyway...\n")
     return False
 
 
-async def extract_links(page):
-    """从当前页面提取所有下载链接"""
-    print("  提取链接...")
+async def extract_links(page, base_url):
+    """Extract all download links from the current page."""
+    print("  Extracting links...")
     links = await page.evaluate("""() => {
         const r = [], s = new Set();
         for (const a of document.querySelectorAll('a[href]')) {
             const h = a.href, t = a.textContent.trim();
             if (!h || h === '#' || h.startsWith('javascript:') || s.has(h)) continue;
             s.add(h);
-            if (h.includes('developer.nvidia.com/downloads') || h.includes('/release/') ||
-                /\\.(tbz2|deb|zip|tar|gz|pdf|img|bin|run|sh|xlsx|exe|msi|dmg|iso)$/i.test(h))
+            if (/\\.(tbz2|deb|zip|tar|gz|pdf|img|bin|run|sh|xlsx|exe|msi|dmg|iso)$/i.test(h) ||
+                h.includes('/downloads') || h.includes('/release/'))
                 r.push({href: h, text: t.substring(0, 150)});
         }
         return r;
     }""")
 
+    base_domain = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
     seen, final = set(), []
     for item in links:
         h = item["href"]
         if h.startswith("/"):
-            h = f"https://developer.nvidia.com{h}"
+            h = f"{base_domain}{h}"
         if h not in seen and h.startswith("http"):
             seen.add(h)
             item["href"] = h
             final.append(item)
 
-    skip_patterns = [
-        "/embedded/downloads#",
-        "/embedded/downloads/archive",
-        "/embedded/community",
-        "/embedded/faq",
-    ]
-    final = [l for l in final if not any(p in l["href"] for p in skip_patterns)]
+    # Filter out navigation links
+    skip_suffixes = ["#", "/archive", "/community", "/faq"]
+    final = [l for l in final if not any(l["href"].rstrip("/").endswith(p) for p in skip_suffixes)]
     return final
 
 
+def format_size(size_bytes):
+    """Format bytes to human-readable string."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1048576:
+        return f"{size_bytes / 1024:.0f} KB"
+    elif size_bytes < 1073741824:
+        return f"{size_bytes / 1048576:.1f} MB"
+    else:
+        return f"{size_bytes / 1073741824:.2f} GB"
+
+
+def format_rate(bytes_count, elapsed_sec):
+    """Format download rate."""
+    if elapsed_sec <= 0:
+        return ""
+    rate = bytes_count / elapsed_sec
+    if rate < 1024:
+        return f"{rate:.0f} B/s"
+    elif rate < 1048576:
+        return f"{rate / 1024:.0f} KB/s"
+    else:
+        return f"{rate / 1048576:.1f} MB/s"
+
+
 async def download_files(page, links, download_dir):
-    """逐个下载文件"""
-    print(f"\n  开始下载到: {download_dir}\n")
+    """Download files one by one with size and rate display."""
+    print(f"\n  Downloading to: {download_dir}\n")
     download_dir.mkdir(parents=True, exist_ok=True)
 
     ok, fail = 0, 0
@@ -135,6 +166,7 @@ async def download_files(page, links, download_dir):
         fn = os.path.basename(urlparse(url).path).rstrip("/") or f"file_{i}"
         fp = download_dir / fn
 
+        # Skip if already downloaded (>20KB)
         if fp.exists() and fp.stat().st_size > 20000:
             print(f"    [{i}/{len(links)}] SKIP {fn}")
             ok += 1
@@ -144,19 +176,23 @@ async def download_files(page, links, download_dir):
         try:
             resp = await page.request.get(url, timeout=300000)
             if resp.ok:
+                t0 = time.monotonic()
                 body = await resp.body()
+                elapsed = time.monotonic() - t0
+
                 if len(body) < 15000 and b"<!DOCTYPE html" in body[:500]:
-                    print("✗ 需要登录")
+                    print("FAILED (login required)")
                     fail += 1
                 else:
                     fp.write_bytes(body)
-                    print(f"✓ {len(body) / 1048576:.1f} MB")
+                    rate = format_rate(len(body), elapsed)
+                    print(f"OK  {format_size(len(body))}  ({rate}, {elapsed:.1f}s)")
                     ok += 1
             else:
-                print(f"✗ HTTP {resp.status}")
+                print(f"FAILED (HTTP {resp.status})")
                 fail += 1
         except Exception as e:
-            print(f"✗ {e}")
+            print(f"FAILED ({e})")
             fail += 1
 
     return ok, fail
@@ -170,37 +206,40 @@ async def main():
         browser = await p.chromium.launch(headless=args.headless)
         page = await browser.new_page()
 
-        # 登录
-        await wait_for_login(page, skip=args.no_login)
+        # Login
+        await wait_for_login(page, args.url, skip=args.no_login)
         await asyncio.sleep(2)
 
-        # 打开目标页面
-        print(f"  打开页面: {args.url}")
-        await page.goto(args.url, wait_until="networkidle", timeout=60000)
+        # Open target page (in case login redirected us away)
+        current_url = page.url
+        target_path = urlparse(args.url).path
+        if target_path and target_path not in current_url:
+            print(f"  Navigating to target page...")
+            await page.goto(args.url, wait_until="networkidle", timeout=60000)
         await asyncio.sleep(2)
         for _ in range(5):
             await page.evaluate("window.scrollBy(0, 1000)")
             await asyncio.sleep(0.3)
 
-        # 提取链接
-        links = await extract_links(page)
-        print(f"\n  找到 {len(links)} 个下载链接:\n")
+        # Extract links
+        links = await extract_links(page, args.url)
+        print(f"\n  Found {len(links)} download links:\n")
         for i, item in enumerate(links, 1):
             print(f"    {i:2d}. {item['text'][:70]}")
         print()
 
         if not links:
-            print("  没有找到下载链接，退出。")
+            print("  No download links found. Exiting.")
             await browser.close()
             return
 
-        # 下载
+        # Download
         ok, fail = await download_files(page, links, download_dir)
 
         await browser.close()
         print(f"\n{'=' * 50}")
-        print(f"  完成! 成功:{ok}  失败:{fail}")
-        print(f"  目录: {download_dir}")
+        print(f"  Done! Success: {ok}  Failed: {fail}")
+        print(f"  Directory: {download_dir}")
         print(f"{'=' * 50}\n")
 
 
