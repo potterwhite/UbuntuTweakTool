@@ -88,7 +88,10 @@ setup_venv() {
     # Install playwright if missing
     if ! python3 -c "import playwright" 2>/dev/null; then
         log_info "Installing dependencies..."
-        pip install -q -r "${SCRIPT_DIR}/requirements.txt"
+        if ! pip install -q -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null; then
+            log_error "Failed to install dependencies"
+            exit 1
+        fi
         log_ok "Dependencies installed"
     fi
 
