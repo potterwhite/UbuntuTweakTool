@@ -2,14 +2,13 @@
 """
 Web Resources Fetcher
 - Opens a browser for login if the site requires authentication
-- Auto-detects login status
-- Extracts all download links from the page and downloads them
+- Clicks each link on the page, captures downloads via browser events
+- No URL pattern matching — works on any site
 
 Usage: python3 fetch.py <url> [--output <dir>] [--headless] [--no-login]
 """
 import argparse
 import asyncio
-import os
 import sys
 import time
 from pathlib import Path
@@ -20,7 +19,7 @@ from playwright.async_api import async_playwright
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Web Resources Fetcher - extract and download all resources from a web page",
+        description="Web Resources Fetcher - click links and capture browser downloads",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -30,23 +29,18 @@ Examples:
         """,
     )
     parser.add_argument("url", help="Target web page URL")
-    parser.add_argument(
-        "-o", "--output",
-        default=None,
-        help="Download directory (default: ./downloads)",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run browser in headless mode (no window)",
-    )
-    parser.add_argument(
-        "--no-login",
-        action="store_true",
-        help="Skip login detection, scrape directly",
-    )
+    parser.add_argument("-o", "--output", default=None,
+                        help="Download directory (default: ./downloads)")
+    parser.add_argument("--headless", action="store_true",
+                        help="Run browser in headless mode (no window)")
+    parser.add_argument("--no-login", action="store_true",
+                        help="Skip login detection, scrape directly")
     return parser.parse_args()
 
+
+# ---------------------------------------------------------------------------
+# Login helpers
+# ---------------------------------------------------------------------------
 
 async def wait_for_login(page, target_url, timeout_sec=300, skip=False):
     """Wait for user to log in. Detects via URL change or page content."""
@@ -59,25 +53,21 @@ async def wait_for_login(page, target_url, timeout_sec=300, skip=False):
     print("  Auto-detecting login status...")
     print("=" * 50 + "\n")
 
-    # Navigate to the target URL; if it redirects to a login page, wait there
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(2)
 
-    # Check if we're already on the target page (no login needed)
     current = page.url
     login_indicators = ["/login", "/signin", "/sign-in", "/auth", "accounts."]
     if not any(ind in current.lower() for ind in login_indicators):
         print(f"  Page loaded directly, no login required.\n")
         return True
 
-    # We're on a login page — wait for redirect back to target
     for i in range(timeout_sec):
         try:
             url = page.url
             if not any(ind in url.lower() for ind in login_indicators):
                 print(f"\n  Login successful! (redirected to: {url[:60]})\n")
                 return True
-            # Also check page content for login indicators
             has_session = await page.evaluate("""() => {
                 const t = (document.body.innerText || '').toLowerCase();
                 return t.includes('sign out') || t.includes('log out') ||
@@ -97,53 +87,11 @@ async def wait_for_login(page, target_url, timeout_sec=300, skip=False):
     return False
 
 
-async def get_remote_size(context, url):
-    """Get remote file size via HEAD request, returns -1 if unavailable."""
-    try:
-        resp = await context.request.head(url, timeout=10000)
-        cl = resp.headers.get("content-length") if resp.headers else None
-        return int(cl) if cl else -1
-    except Exception:
-        return -1
-
-
-async def extract_links(page, base_url):
-    """Extract all download links from the current page."""
-    print("  Extracting links...")
-    links = await page.evaluate("""() => {
-        const r = [], s = new Set();
-        for (const a of document.querySelectorAll('a[href]')) {
-            const h = a.href, t = a.textContent.trim();
-            if (!h || h === '#' || h.startsWith('javascript:') || s.has(h)) continue;
-            s.add(h);
-            const isFile = /\\.(tbz2|deb|zip|tar|gz|pdf|img|bin|run|sh|xlsx|exe|msi|dmg|iso)(\\?|$)/i.test(h);
-            const isDownloadLink = /\\/(download|release|assets?)\\//i.test(h) ||
-                                   a.hasAttribute('download');
-            if (isFile || isDownloadLink)
-                r.push({href: h, text: t.substring(0, 150)});
-        }
-        return r;
-    }""")
-
-    base_domain = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
-    seen, final = set(), []
-    for item in links:
-        h = item["href"]
-        if h.startswith("/"):
-            h = f"{base_domain}{h}"
-        if h not in seen and h.startswith("http"):
-            seen.add(h)
-            item["href"] = h
-            final.append(item)
-
-    # Filter out navigation links
-    skip_suffixes = ["#", "/archive", "/community", "/faq"]
-    final = [l for l in final if not any(l["href"].rstrip("/").endswith(p) for p in skip_suffixes)]
-    return final
-
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
 
 def format_size(size_bytes):
-    """Format bytes to human-readable string."""
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1048576:
@@ -155,7 +103,6 @@ def format_size(size_bytes):
 
 
 def format_rate(bytes_count, elapsed_sec):
-    """Format download rate."""
     if elapsed_sec <= 0:
         return ""
     rate = bytes_count / elapsed_sec
@@ -167,62 +114,155 @@ def format_rate(bytes_count, elapsed_sec):
         return f"{rate / 1048576:.1f} MB/s"
 
 
-async def download_files(context, page, links, download_dir):
-    """Download files one by one with size and rate display."""
+# ---------------------------------------------------------------------------
+# Core: extract links + click-to-download
+# ---------------------------------------------------------------------------
+
+async def extract_links(page):
+    """Extract ALL links from the page (no URL filtering)."""
+    print("  Extracting links...")
+    links = await page.evaluate("""() => {
+        const r = [], s = new Set();
+        for (const a of document.querySelectorAll('a[href]')) {
+            const h = a.href, t = a.textContent.trim();
+            if (!h || h === '#' || h.startsWith('javascript:') || s.has(h)) continue;
+            s.add(h);
+            r.push({href: h, text: t.substring(0, 150)});
+        }
+        return r;
+    }""")
+    return links
+
+
+async def click_download(page, link_info, download_dir, idx, total):
+    """Click a link; if it triggers a download, save the file.
+
+    Strategy:
+    - Listen for 'download' event (fires when browser starts a download)
+    - Listen for 'framenavigated' event (fires when page navigates away)
+    - Click the link, wait for either event
+    - If download → save file
+    - If navigated → go back to original page
+    - If timeout → skip (regular link)
+    """
+    url = link_info["href"]
+    text = link_info["text"][:60]
+
+    # Skip obviously non-download links
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    if not path or path in ("#", "/"):
+        return None
+    # Skip social/sharing links
+    if any(d in parsed.netloc for d in ["twitter.com", "facebook.com", "linkedin.com", "mailto:"]):
+        return None
+
+    # Find the link element
+    try:
+        link_el = page.locator(f'a[href="{url}"]').first
+        if not await link_el.count():
+            # Try with full URL
+            link_el = page.locator(f'a[href="{link_info["href"]}"]').first
+            if not await link_el.count():
+                return None
+    except Exception:
+        return None
+
+    # Check if already downloaded
+    # We'll check after we know the filename (from download event)
+
+    # Set up listeners BEFORE clicking
+    download_event = asyncio.Event()
+    nav_event = asyncio.Event()
+    download_obj = [None]  # mutable container for the download object
+
+    def on_download(dl):
+        download_obj[0] = dl
+        download_event.set()
+
+    def on_nav(frame):
+        if frame == page.main_frame:
+            nav_event.set()
+
+    page.on("download", on_download)
+    page.on("framenavigated", on_nav)
+
+    try:
+        # Click the link
+        await link_el.click(timeout=5000)
+
+        # Wait for download or navigation (whichever comes first)
+        done, _ = await asyncio.wait(
+            [
+                asyncio.create_task(download_event.wait()),
+                asyncio.create_task(nav_event.wait()),
+            ],
+            timeout=8,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if download_event.is_set():
+            dl = download_obj[0]
+            fn = dl.suggested_filename or f"file_{idx}"
+            fp = download_dir / fn
+
+            # Skip if already exists
+            if fp.exists() and fp.stat().st_size > 1000:
+                sz = format_size(fp.stat().st_size)
+                print(f"    [{idx}/{total}] SKIP {fn}  ({sz})")
+                return "skip"
+
+            t0 = time.monotonic()
+            await dl.save_as(str(fp))
+            elapsed = time.monotonic() - t0
+            size = fp.stat().st_size
+            rate = format_rate(size, elapsed)
+            print(f"    [{idx}/{total}] {fn}  OK  {format_size(size)}  ({rate}, {elapsed:.1f}s)")
+            return "ok"
+
+        elif nav_event.is_set():
+            # Page navigated away — go back
+            await page.go_back(timeout=10000, wait_until="domcontentloaded")
+            await asyncio.sleep(1)
+            return "nav"
+
+        else:
+            # Timeout — not a download link
+            return "skip"
+
+    except Exception:
+        return None
+    finally:
+        page.remove_listener("download", on_download)
+        page.remove_listener("framenavigated", on_nav)
+
+
+async def process_links(page, links, download_dir):
+    """Process all links: click each, capture downloads."""
     print(f"\n  Downloading to: {download_dir}\n")
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    ok, fail = 0, 0
+    ok, fail, skipped = 0, 0, 0
+    total = len(links)
+
     for i, item in enumerate(links, 1):
-        url = item["href"]
-        fn = os.path.basename(urlparse(url).path).rstrip("/") or f"file_{i}"
-        fp = download_dir / fn
-
-        # Skip if already downloaded (>20KB)
-        if fp.exists() and fp.stat().st_size > 20000:
-            sz = format_size(fp.stat().st_size)
-            print(f"    [{i}/{len(links)}] SKIP {fn}  ({sz})")
+        result = await click_download(page, item, download_dir, i, total)
+        if result == "ok":
             ok += 1
-            continue
-
-        # Pre-check file size via HEAD (uses Playwright context, auto-auth)
-        remote_size = -1
-        try:
-            head_resp = await context.request.head(url, timeout=10000)
-            cl = head_resp.headers.get("content-length") if head_resp.headers else None
-            remote_size = int(cl) if cl else -1
-        except Exception:
-            pass
-        size_hint = f"  ({format_size(remote_size)})" if remote_size > 0 else ""
-
-        print(f"    [{i}/{len(links)}] {fn}{size_hint} ... ", end="", flush=True)
-
-        try:
-            # Download via Playwright (auto-auth with browser cookies)
-            resp = await page.request.get(url, timeout=300000)
-            if resp.ok:
-                t0 = time.monotonic()
-                body = await resp.body()
-                elapsed = time.monotonic() - t0
-
-                # Detect login page response
-                if len(body) < 15000 and b"<!DOCTYPE html" in body[:500]:
-                    print("FAILED (login required)")
-                    fail += 1
-                else:
-                    fp.write_bytes(body)
-                    rate = format_rate(len(body), elapsed)
-                    print(f"OK  {format_size(len(body))}  ({rate}, {elapsed:.1f}s)")
-                    ok += 1
-            else:
-                print(f"FAILED (HTTP {resp.status})")
-                fail += 1
-        except Exception as e:
-            print(f"FAILED ({e})")
+        elif result == "skip":
+            skipped += 1
+        elif result == "nav":
+            # Navigated — link was a page link, not a download
+            skipped += 1
+        else:
             fail += 1
 
-    return ok, fail
+    return ok, fail, skipped
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 async def main():
     args = parse_args()
@@ -236,36 +276,41 @@ async def main():
         await wait_for_login(page, args.url, skip=args.no_login)
         await asyncio.sleep(2)
 
-        # Open target page (in case login redirected us away)
+        # Make sure we're on the target page (login may have redirected us)
         current_url = page.url
         target_path = urlparse(args.url).path
         if target_path and target_path not in current_url:
-            print(f"  Navigating to target page...")
+            print("  Navigating to target page...")
             await page.goto(args.url, wait_until="networkidle", timeout=60000)
         await asyncio.sleep(2)
-        for _ in range(5):
+
+        # Scroll to load lazy content
+        print("  Scrolling page to load all content...")
+        for _ in range(20):
             await page.evaluate("window.scrollBy(0, 1000)")
             await asyncio.sleep(0.3)
+        # Scroll back to top
+        await page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(1)
 
-        # Extract links
-        links = await extract_links(page, args.url)
-        print(f"\n  Found {len(links)} download links:\n")
+        # Extract ALL links
+        links = await extract_links(page)
+        print(f"\n  Found {len(links)} links on page:\n")
         for i, item in enumerate(links, 1):
             print(f"    {i:2d}. {item['text'][:70]}")
         print()
 
         if not links:
-            print("  No download links found. Exiting.")
+            print("  No links found. Exiting.")
             await browser.close()
             return
 
-        # Download
-        context = page.context
-        ok, fail = await download_files(context, page, links, download_dir)
+        # Download: click each link, capture downloads
+        ok, fail, skipped = await process_links(page, links, download_dir)
 
         await browser.close()
         print(f"\n{'=' * 50}")
-        print(f"  Done! Success: {ok}  Failed: {fail}")
+        print(f"  Done! Downloaded: {ok}  Skipped: {skipped}  Failed: {fail}")
         print(f"  Directory: {download_dir}")
         print(f"{'=' * 50}\n")
 
