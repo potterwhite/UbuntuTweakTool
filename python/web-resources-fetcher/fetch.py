@@ -16,7 +16,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
-import aiohttp
 
 
 def parse_args():
@@ -117,8 +116,10 @@ async def extract_links(page, base_url):
             const h = a.href, t = a.textContent.trim();
             if (!h || h === '#' || h.startsWith('javascript:') || s.has(h)) continue;
             s.add(h);
-            if (/\\.(tbz2|deb|zip|tar|gz|pdf|img|bin|run|sh|xlsx|exe|msi|dmg|iso)$/i.test(h) ||
-                h.includes('/downloads') || h.includes('/release/'))
+            const isFile = /\\.(tbz2|deb|zip|tar|gz|pdf|img|bin|run|sh|xlsx|exe|msi|dmg|iso)(\\?|$)/i.test(h);
+            const isDownloadLink = /\\/(download|release|assets?)\\//i.test(h) ||
+                                   a.hasAttribute('download');
+            if (isFile || isDownloadLink)
                 r.push({href: h, text: t.substring(0, 150)});
         }
         return r;
@@ -171,12 +172,6 @@ async def download_files(context, page, links, download_dir):
     print(f"\n  Downloading to: {download_dir}\n")
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect Playwright cookies for aiohttp auth
-    pw_cookies = await context.cookies()
-    cookie_header = "; ".join(f'{c["name"]}={c["value"]}' for c in pw_cookies)
-
-    STREAM_THRESHOLD = 10 * 1024 * 1024  # 10MB: use streaming above this
-
     ok, fail = 0, 0
     for i, item in enumerate(links, 1):
         url = item["href"]
@@ -190,71 +185,38 @@ async def download_files(context, page, links, download_dir):
             ok += 1
             continue
 
-        # Pre-check file size
-        remote_size = await get_remote_size(context, url)
+        # Pre-check file size via HEAD (uses Playwright context, auto-auth)
+        remote_size = -1
+        try:
+            head_resp = await context.request.head(url, timeout=10000)
+            cl = head_resp.headers.get("content-length") if head_resp.headers else None
+            remote_size = int(cl) if cl else -1
+        except Exception:
+            pass
         size_hint = f"  ({format_size(remote_size)})" if remote_size > 0 else ""
 
         print(f"    [{i}/{len(links)}] {fn}{size_hint} ... ", end="", flush=True)
 
-        # Decide: streaming (large files) or one-shot (small files)
-        use_stream = remote_size >= STREAM_THRESHOLD
-
         try:
-            if use_stream:
-                # Stream download via aiohttp with progress
+            # Download via Playwright (auto-auth with browser cookies)
+            resp = await page.request.get(url, timeout=300000)
+            if resp.ok:
                 t0 = time.monotonic()
-                downloaded = 0
-                headers = {
-                    "User-Agent": await page.evaluate("navigator.userAgent"),
-                    "Cookie": cookie_header,
-                }
-                async with aiohttp.ClientSession() as sess:
-                    async with sess.get(url, headers=headers) as resp:
-                        if resp.status == 200:
-                            # Check login: first chunk HTML detection
-                            first_chunk = await resp.content.read(4096)
-                            if len(first_chunk) < 15000 and b"<!DOCTYPE html" in first_chunk[:500]:
-                                print("FAILED (login required)")
-                                fail += 1
-                                continue
-                            # Stream to file
-                            with open(fp, "wb") as f:
-                                f.write(first_chunk)
-                                downloaded += len(first_chunk)
-                                async for chunk in resp.content.iter_chunked(65536):
-                                    f.write(chunk)
-                                    downloaded += len(chunk)
-                                    elapsed = time.monotonic() - t0
-                                    rate = format_rate(downloaded, elapsed)
-                                    pct = f"{downloaded * 100 // remote_size}%" if remote_size > 0 else format_size(downloaded)
-                                    sys.stdout.write(f"\r    [{i}/{len(links)}] {fn}  {pct}  ({rate})  ")
-                                    sys.stdout.flush()
-                            elapsed = time.monotonic() - t0
-                            rate = format_rate(downloaded, elapsed)
-                            print(f"\r    [{i}/{len(links)}] {fn}  OK  {format_size(downloaded)}  ({rate}, {elapsed:.1f}s)")
-                            ok += 1
-                        else:
-                            print(f"FAILED (HTTP {resp.status})")
-                            fail += 1
-            else:
-                # Small file: one-shot download via Playwright
-                resp = await page.request.get(url, timeout=300000)
-                if resp.ok:
-                    t0 = time.monotonic()
-                    body = await resp.body()
-                    elapsed = time.monotonic() - t0
+                body = await resp.body()
+                elapsed = time.monotonic() - t0
 
-                    if len(body) < 15000 and b"<!DOCTYPE html" in body[:500]:
-                        print("FAILED (login required)")
-                        fail += 1
-                    else:
-                        fp.write_bytes(body)
-                        rate = format_rate(len(body), elapsed)
-                        print(f"OK  {format_size(len(body))}  ({rate}, {elapsed:.1f}s)")
-                        ok += 1
-                else:
-                    print(f"FAILED (HTTP {resp.status})")
+                # Detect login page response
+                if len(body) < 15000 and b"<!DOCTYPE html" in body[:500]:
+                    print("FAILED (login required)")
                     fail += 1
+                else:
+                    fp.write_bytes(body)
+                    rate = format_rate(len(body), elapsed)
+                    print(f"OK  {format_size(len(body))}  ({rate}, {elapsed:.1f}s)")
+                    ok += 1
+            else:
+                print(f"FAILED (HTTP {resp.status})")
+                fail += 1
         except Exception as e:
             print(f"FAILED ({e})")
             fail += 1
