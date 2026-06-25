@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
+import aiohttp
 
 
 def parse_args():
@@ -97,6 +98,16 @@ async def wait_for_login(page, target_url, timeout_sec=300, skip=False):
     return False
 
 
+async def get_remote_size(context, url):
+    """Get remote file size via HEAD request, returns -1 if unavailable."""
+    try:
+        resp = await context.request.head(url, timeout=10000)
+        cl = resp.headers.get("content-length") if resp.headers else None
+        return int(cl) if cl else -1
+    except Exception:
+        return -1
+
+
 async def extract_links(page, base_url):
     """Extract all download links from the current page."""
     print("  Extracting links...")
@@ -155,10 +166,16 @@ def format_rate(bytes_count, elapsed_sec):
         return f"{rate / 1048576:.1f} MB/s"
 
 
-async def download_files(page, links, download_dir):
+async def download_files(context, page, links, download_dir):
     """Download files one by one with size and rate display."""
     print(f"\n  Downloading to: {download_dir}\n")
     download_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect Playwright cookies for aiohttp auth
+    pw_cookies = await context.cookies()
+    cookie_header = "; ".join(f'{c["name"]}={c["value"]}' for c in pw_cookies)
+
+    STREAM_THRESHOLD = 10 * 1024 * 1024  # 10MB: use streaming above this
 
     ok, fail = 0, 0
     for i, item in enumerate(links, 1):
@@ -168,29 +185,76 @@ async def download_files(page, links, download_dir):
 
         # Skip if already downloaded (>20KB)
         if fp.exists() and fp.stat().st_size > 20000:
-            print(f"    [{i}/{len(links)}] SKIP {fn}")
+            sz = format_size(fp.stat().st_size)
+            print(f"    [{i}/{len(links)}] SKIP {fn}  ({sz})")
             ok += 1
             continue
 
-        print(f"    [{i}/{len(links)}] {fn} ... ", end="", flush=True)
-        try:
-            resp = await page.request.get(url, timeout=300000)
-            if resp.ok:
-                t0 = time.monotonic()
-                body = await resp.body()
-                elapsed = time.monotonic() - t0
+        # Pre-check file size
+        remote_size = await get_remote_size(context, url)
+        size_hint = f"  ({format_size(remote_size)})" if remote_size > 0 else ""
 
-                if len(body) < 15000 and b"<!DOCTYPE html" in body[:500]:
-                    print("FAILED (login required)")
-                    fail += 1
-                else:
-                    fp.write_bytes(body)
-                    rate = format_rate(len(body), elapsed)
-                    print(f"OK  {format_size(len(body))}  ({rate}, {elapsed:.1f}s)")
-                    ok += 1
+        print(f"    [{i}/{len(links)}] {fn}{size_hint} ... ", end="", flush=True)
+
+        # Decide: streaming (large files) or one-shot (small files)
+        use_stream = remote_size >= STREAM_THRESHOLD
+
+        try:
+            if use_stream:
+                # Stream download via aiohttp with progress
+                t0 = time.monotonic()
+                downloaded = 0
+                headers = {
+                    "User-Agent": await page.evaluate("navigator.userAgent"),
+                    "Cookie": cookie_header,
+                }
+                async with aiohttp.ClientSession() as sess:
+                    async with sess.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            # Check login: first chunk HTML detection
+                            first_chunk = await resp.content.read(4096)
+                            if len(first_chunk) < 15000 and b"<!DOCTYPE html" in first_chunk[:500]:
+                                print("FAILED (login required)")
+                                fail += 1
+                                continue
+                            # Stream to file
+                            with open(fp, "wb") as f:
+                                f.write(first_chunk)
+                                downloaded += len(first_chunk)
+                                async for chunk in resp.content.iter_chunked(65536):
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    elapsed = time.monotonic() - t0
+                                    rate = format_rate(downloaded, elapsed)
+                                    pct = f"{downloaded * 100 // remote_size}%" if remote_size > 0 else format_size(downloaded)
+                                    sys.stdout.write(f"\r    [{i}/{len(links)}] {fn}  {pct}  ({rate})  ")
+                                    sys.stdout.flush()
+                            elapsed = time.monotonic() - t0
+                            rate = format_rate(downloaded, elapsed)
+                            print(f"\r    [{i}/{len(links)}] {fn}  OK  {format_size(downloaded)}  ({rate}, {elapsed:.1f}s)")
+                            ok += 1
+                        else:
+                            print(f"FAILED (HTTP {resp.status})")
+                            fail += 1
             else:
-                print(f"FAILED (HTTP {resp.status})")
-                fail += 1
+                # Small file: one-shot download via Playwright
+                resp = await page.request.get(url, timeout=300000)
+                if resp.ok:
+                    t0 = time.monotonic()
+                    body = await resp.body()
+                    elapsed = time.monotonic() - t0
+
+                    if len(body) < 15000 and b"<!DOCTYPE html" in body[:500]:
+                        print("FAILED (login required)")
+                        fail += 1
+                    else:
+                        fp.write_bytes(body)
+                        rate = format_rate(len(body), elapsed)
+                        print(f"OK  {format_size(len(body))}  ({rate}, {elapsed:.1f}s)")
+                        ok += 1
+                else:
+                    print(f"FAILED (HTTP {resp.status})")
+                    fail += 1
         except Exception as e:
             print(f"FAILED ({e})")
             fail += 1
@@ -234,7 +298,8 @@ async def main():
             return
 
         # Download
-        ok, fail = await download_files(page, links, download_dir)
+        context = page.context
+        ok, fail = await download_files(context, page, links, download_dir)
 
         await browser.close()
         print(f"\n{'=' * 50}")
