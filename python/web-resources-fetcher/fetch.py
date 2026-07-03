@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Error
 
 
 # ── Formatting ──────────────────────────────────────────────
@@ -109,7 +109,27 @@ async def wait_for_login(page, target_url: str):
 async def extract_links(page) -> list[dict]:
     """Extract meaningful links from the page, excluding nav/header/footer."""
     links = await page.evaluate("""() => {
-        // Find main content area
+        // Strategy 1: NVIDIA-style Angular apps — look for ng-repeat result items
+        // These are the actual search/download results, not page navigation
+        const ngItems = document.querySelectorAll('[ng-repeat] a[href]');
+        if (ngItems.length > 3) {
+            const seen = new Set();
+            const results = [];
+            for (const a of ngItems) {
+                const href = a.href;
+                if (!href || seen.has(href)) continue;
+                const h = href.toLowerCase();
+                if (h === '#' || h.startsWith('javascript:') || h.startsWith('mailto:')) continue;
+                seen.add(href);
+                results.push({
+                    href: href,
+                    text: (a.textContent || '').trim().substring(0, 200)
+                });
+            }
+            if (results.length > 0) return results;
+        }
+
+        // Strategy 2: Generic — find main content area
         const mainSelectors = [
             'main', '[role="main"]', '#main', '#content', '#app',
             '.main-content', '.content', '.container', '.page-content',
@@ -284,25 +304,22 @@ def is_html_content_type(resp) -> bool:
 
 async def click_download(page, link: dict, download_dir: Path,
                          idx: int, total: int) -> str | None:
-    """Try to download a file by clicking the link.
+    """Try to download a file.
 
     Strategy:
-      1. Try HEAD request → if non-HTML, download directly
-      2. Click link → listen for download event (with popup handling)
+      1. If URL looks like a direct file link, GET it directly via browser context
+      2. Otherwise, scroll element into view, click, listen for download event
     """
     url = link["href"]
     text = link["text"][:60]
 
     try:
-        # Phase 1: HEAD pre-check
+        # Phase 1: Direct GET via browser context (shares cookies/referrer)
+        # This works for direct file URLs even when the element isn't visible
         try:
-            head_resp = await page.request.head(url, timeout=10000)
-            ct = head_resp.headers.get("content-type", "").lower()
-            cd = head_resp.headers.get("content-disposition", "").lower()
-
-            # If clearly not HTML, download directly
-            if "text/html" not in ct or "attachment" in cd:
-                fn = filename_from_response(head_resp) or filename_from_url(url) or f"file_{idx}"
+            fn = filename_from_url(url)
+            if fn and "." in fn:
+                # URL looks like a direct file link — try GET directly
                 fp = download_dir / fn
                 if fp.exists() and fp.stat().st_size > 1000:
                     print(f"    [{idx}/{total}] SKIP  {fn}  ({format_size(fp.stat().st_size)})")
@@ -310,12 +327,18 @@ async def click_download(page, link: dict, download_dir: Path,
 
                 t0 = time.monotonic()
                 resp = await page.request.get(url, timeout=120000)
+                ct = resp.headers.get("content-type", "").lower()
+                cd = resp.headers.get("content-disposition", "").lower()
+
+                # If we got HTML back, it's probably a login/redirect page
+                if "text/html" in ct and "attachment" not in cd:
+                    raise Exception("Got HTML response, falling through to click")
+
                 body = await resp.body()
                 elapsed = time.monotonic() - t0
 
                 if len(body) < 100:
-                    print(f"    [{idx}/{total}] FAIL  {fn}  (empty response)")
-                    return None
+                    raise Exception("Empty response")
 
                 fn = filename_from_response(resp) or fn
                 fp = download_dir / fn
@@ -333,6 +356,13 @@ async def click_download(page, link: dict, download_dir: Path,
                 link_el = page.locator(f'a[href*="{url.split("/")[-1]}"]').first
                 if not await link_el.count():
                     return None
+
+            # Scroll element into view (needed for virtual-scrolling pages like NVIDIA)
+            try:
+                await link_el.scroll_into_view_if_needed(timeout=3000)
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
         except Exception:
             return None
 
@@ -502,7 +532,14 @@ async def main():
 
         print("  Scrolling page to load all content...")
         for i in range(20):
-            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            try:
+                await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            except Error as e:
+                if "Execution context was destroyed" in str(e) or "navigation" in str(e).lower():
+                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    await asyncio.sleep(1)
+                else:
+                    raise
             await asyncio.sleep(0.3)
 
         print("  Extracting links...")
