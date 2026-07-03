@@ -144,9 +144,32 @@ func_2_3_ensure_environment() {
 }
 
 func_2_4_ask_owner() {
+    # Auto-resolve owner from a layered fallback chain.
+    #   1. git config user.name  — project-local, then --global
+    #   2. Interactive prompt    — last resort
+    local target_dir="${1:-.}"
+    local resolved=""
+
+    # 1. git config user.name (local first, then global)
+    if func_1_5_check_command git; then
+        if git -C "$target_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            resolved=$(git -C "$target_dir" config --get user.name 2>/dev/null)
+        fi
+        if [ -z "$resolved" ]; then
+            resolved=$(git config --global --get user.name 2>/dev/null)
+        fi
+        if [ -n "$resolved" ]; then
+            func_1_1_log_info "Using owner from git config user.name: ${resolved}"
+            echo "$resolved"
+            return
+        fi
+    fi
+
+    # 2. Interactive fallback
     echo "" >&2
     echo -e "${BLUE}--- Configuration: Copyright Owner ---${NC}" >&2
     echo "Who holds the copyright?" >&2
+    echo "  (set it permanently via 'git config user.name \"Your Name\"')" >&2
     echo -n -e "Enter Name [${DEFAULT_OWNER_NAME}]: " >&2
     read user_owner
     if [ -z "$user_owner" ]; then
@@ -301,10 +324,43 @@ func_2_7_execute_apply() {
         find_args+=(")" "-prune" "-o")
     fi
 
-    find_args+=("-type" "f" "(")
-    find_args+=("-name" "*.cpp" "-o" "-name" "*.c" "-o" "-name" "*.cc" "-o" "-name" "*.h" "-o" "-name" "*.hpp")
-    find_args+=("-o" "-name" "CMakeLists.txt" "-o" "-name" "*.go" "-o" "-name" "*.java" "-o" "-name" "*.py" "-o" "-name" "*.yml" "-o" "-name" "*.yaml" "-o" "-name" "*.toml")
-    find_args+=(")" "-print")
+#    find_args+=("-type" "f" "(")
+#    find_args+=("-name" "*.cpp" \ 
+#    		"-o" "-name" "*.c" \
+#		"-o" "-name" "*.cc" \
+#		"-o" "-name" "*.h" \
+#		"-o" "-name" "*.hpp")
+#    find_args+=("-o" "-name" "CMakeLists.txt" \
+#    		"-o" "-name" "*.go" \
+#		"-o" "-name" "*.java" \
+#		"-o" "-name" "*.py" \
+#		"-o" "-name" "*.yml" \
+#		"-o" "-name" "*.yaml" \
+#		"-o" "-name" "helmsman" \
+#		"-o" "-name" "*.sh" \
+#		"-o" "-name" "*.cmake")
+#    find_args+=(")" "-print")
+find_args=(
+  -type f "("
+    -name "*.cpp"
+    -o -name "*.c"
+    -o -name "*.cc"
+    -o -name "*.h"
+    -o -name "*.hpp"
+    -o -name "CMakeLists.txt"
+    -o -name "*.go"
+    -o -name "*.java"
+    -o -name "*.py"
+    -o -name "*.yml"
+    -o -name "*.yaml"
+    -o -name "helmsman"
+    -o -name "*.sh"
+    -o -name "*.cmake"
+  ")"
+  -print
+)
+
+
 
     # Construct the base command
     local cmd=("$TOOL_BIN" "-c" "$owner" "-l" "$license" "-v")
@@ -333,7 +389,7 @@ func_3_1_main() {
     func_2_1_validate_and_preview "$target_arg"
     func_2_2_ensure_git_safe "$target_arg"
     func_2_3_ensure_environment
-    local owner_val=$(func_2_4_ask_owner)
+    local owner_val=$(func_2_4_ask_owner "$target_arg")
     local license_val=$(func_2_5_select_license)
     local ignore_val=$(func_2_6_scan_ignores "$target_arg")
     func_2_7_execute_apply "$target_arg" "$owner_val" "$license_val" "$ignore_val"
