@@ -22,7 +22,10 @@ def get_group_mapping(number):
 	return group_mapping.get(number, 'unknown-group')
 
 def format_all(interface, group, pin):
-	print(f"gpio{interface} RK_P{group}{pin}")
+    #string_group = get_group_mapping(group)
+	print(f"GPIO{interface}_{get_group_mapping(group)}{pin}")
+
+	#print(f"gpio{interface} RK_P{group}{pin}")
 	print("\n")
 
 ######
