@@ -40,13 +40,31 @@ HOME_D=$(echo "$PW" | cut -d: -f6)
 echo "  found: UID $UID_N, home ${HOME_D:-none}"
 
 #===============================================================================
-# 2. Refuse root and any account below the system's own human-UID threshold.
+# 2. Only delete accounts inside the system's own human-user UID range.
+#    Below UID_MIN are service accounts; above UID_MAX are the reserved values
+#    (65534 = nobody, the kernel's overflow UID) and mapped/remote accounts.
 #===============================================================================
 step "Checking the account is safe to delete"
+
 UID_MIN=$(awk '/^[[:space:]]*UID_MIN/{print $2}' /etc/login.defs 2>/dev/null | tail -n1)
-[ "$UID_N" -ge "${UID_MIN:-1000}" ] \
-  || { echo "  FAIL: UID $UID_N is below UID_MIN ${UID_MIN:-1000} — system account. Refusing."; exit 1; }
-echo "  OK: UID $UID_N is a normal user account (UID_MIN ${UID_MIN:-1000})"
+UID_MAX=$(awk '/^[[:space:]]*UID_MAX/{print $2}' /etc/login.defs 2>/dev/null | tail -n1)
+UID_MIN="${UID_MIN:-1000}"
+UID_MAX="${UID_MAX:-60000}"
+
+if [ "$UID_N" -lt "$UID_MIN" ]; then
+    echo "  FAIL: UID $UID_N is below UID_MIN $UID_MIN — service account. Refusing."
+    exit 1
+fi
+
+if [ "$UID_N" -gt "$UID_MAX" ]; then
+    echo "  FAIL: UID $UID_N is above UID_MAX $UID_MAX — reserved range. Refusing."
+    echo "        65534 is 'nobody' / the kernel overflow UID; 65535 and 4294967295"
+    echo "        are the 16- and 32-bit invalid values. Deleting these breaks NFS"
+    echo "        and file-ownership fallbacks system-wide."
+    exit 1
+fi
+
+echo "  OK: UID $UID_N is in the normal user range ($UID_MIN-$UID_MAX)"
 
 #===============================================================================
 # 3. Confirm interactively. Typing the name prevents deleting the wrong account.
