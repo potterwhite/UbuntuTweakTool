@@ -2,14 +2,22 @@
 
 ################################################################################
 # Script Name: delete-linux-user.sh
-# Description: Remove a Linux user using base-system tools only. Handles the
-#              failure modes that survive a reboot: home-directory mount points
-#              (data loss), name-based leftovers that a recreated user would
-#              inherit, and files left owned by a reusable bare UID.
+# Description: Remove a Linux user in 8 numbered steps, using base-system tools
+#              only. Targets the failure modes that survive a reboot:
+#                - unmounts filesystems under the home directory first, since
+#                  userdel -r would otherwise delete through a mount point
+#                - clears name-based leftovers (sudoers.d, cron spool) that a
+#                  recreated same-name user would inherit
+#                - checks the userdel exit code, treating rc=12 as a partial
+#                  cleanup rather than success
+#                - verifies afterwards, then reports files still owned by the
+#                  now-reusable bare UID (reported only, never deleted)
+#              Only on-disk filesystems are scanned; network mounts (nfs,
+#              cifs/samba, sshfs) and virtual filesystems are left alone.
 #              Transient state under /run and /tmp is left to the reboot.
-# Author: MrJamesLZAZ
+# Author: PotterWhite
 # Created: 2026-08-10
-# Version: 2.1
+# Version: 0.1.2
 ################################################################################
 
 set -uo pipefail
@@ -169,11 +177,16 @@ fi
 
 # 8c. Bare-UID files: harmless on their own, but the next new user gets this UID
 #     and would inherit them. Reported, never auto-deleted — may be shared data.
-echo "  scanning local filesystems for files owned by UID $UID_N ..."
 
-# Only real on-disk filesystems. Skipping tmpfs/proc/sysfs avoids noise, and
-# skipping nfs/cifs avoids walking the network.
+# Whitelist of on-disk filesystem types. Everything else is left untouched,
+# including all network mounts (nfs, cifs/samba, sshfs) and virtual filesystems.
 disk_fs="ext2 ext3 ext4 xfs btrfs f2fs zfs jfs vfat ntfs exfat"
+
+echo "  scanning for files owned by UID $UID_N ..."
+echo "  ONLY these filesystem types are searched: $disk_fs"
+echo "  Any mount not of those types is NOT searched and prints nothing below."
+echo "  This can take minutes to tens of minutes, depending on the file count."
+
 scan_roots=()
 while read -r target fstype; do
     case " $disk_fs " in
@@ -185,8 +198,14 @@ done < <(findmnt -rno TARGET,FSTYPE)
 # point separately covers the whole disk without crossing into another one twice.
 orphans=""
 for root in "${scan_roots[@]}"; do
+    echo "    scanning $root ..."
     hits=$(find "$root" -xdev -uid "$UID_N" -print 2>/dev/null)
-    [ -n "$hits" ] && orphans="${orphans}${hits}"$'\n'
+    if [ -n "$hits" ]; then
+        orphans="${orphans}${hits}"$'\n'
+        echo "    done $root — $(echo "$hits" | grep -c .) match(es)"
+    else
+        echo "    done $root — none"
+    fi
 done
 
 if [ -n "$orphans" ]; then
