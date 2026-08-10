@@ -58,15 +58,37 @@ read -r a
 
 #===============================================================================
 # 4. Mount points under the home directory. THE one data-loss risk: userdel -r
-#    deletes recursively and would follow a mount into live data. Deepest first.
+#    deletes recursively and would follow a mount into the live filesystem
+#    behind it. Unmount everything first, or refuse to continue.
 #===============================================================================
 step "Unmounting any filesystem under $HOME_D"
-findmnt -rno TARGET | awk -v h="$HOME_D" 'index($0,h"/")==1||$0==h' \
-  | awk '{print length"\t"$0}' | sort -rn | cut -f2- | while read -r m; do
-    umount "$m" 2>/dev/null && echo "  unmounted $m" \
-      || { echo "  FAIL: cannot unmount $m"; exit 9; }
-done || { echo "  Refusing to run 'userdel -r' with a filesystem still mounted there."; exit 1; }
-echo "  OK: nothing left mounted under the home directory"
+
+# Collect the mount points at or below the home directory.
+# `sort -r` puts children before parents, which is the order umount needs: a
+# child path is its parent plus more characters, so it always sorts higher.
+# The case pattern matches $HOME_D and $HOME_D/* but not /home/jamesbond.
+mounts=()
+while read -r target; do
+    case "$target" in
+        "$HOME_D" | "$HOME_D"/*) mounts+=("$target") ;;
+    esac
+done < <(findmnt -rno TARGET | sort -r)
+
+if [ ${#mounts[@]} -eq 0 ]; then
+    echo "  OK: nothing mounted under the home directory"
+else
+    for target in "${mounts[@]}"; do
+        if umount "$target" 2>/dev/null; then
+            echo "  unmounted $target"
+        else
+            echo "  FAIL: cannot unmount $target"
+            echo "        Refusing to run 'userdel -r' — it would delete through"
+            echo "        that mount into live data. Unmount it and re-run."
+            exit 1
+        fi
+    done
+    echo "  OK: unmounted ${#mounts[@]} mount point(s)"
+fi
 
 #===============================================================================
 # 5. Processes: TERM, wait, then KILL. Match on UID — the name stops resolving
@@ -130,13 +152,29 @@ fi
 # 8c. Bare-UID files: harmless on their own, but the next new user gets this UID
 #     and would inherit them. Reported, never auto-deleted — may be shared data.
 echo "  scanning local filesystems for files owned by UID $UID_N ..."
-orphans=$(findmnt -rno TARGET,FSTYPE \
-  | awk '$2~/^(ext2|ext3|ext4|xfs|btrfs|f2fs|zfs|jfs|vfat|ntfs|exfat)$/{print $1}' \
-  | while read -r r; do find "$r" -xdev -uid "$UID_N" -print 2>/dev/null; done)
+
+# Only real on-disk filesystems. Skipping tmpfs/proc/sysfs avoids noise, and
+# skipping nfs/cifs avoids walking the network.
+disk_fs="ext2 ext3 ext4 xfs btrfs f2fs zfs jfs vfat ntfs exfat"
+scan_roots=()
+while read -r target fstype; do
+    case " $disk_fs " in
+        *" $fstype "*) scan_roots+=("$target") ;;
+    esac
+done < <(findmnt -rno TARGET,FSTYPE)
+
+# -xdev keeps each find inside its own filesystem, so scanning every mount
+# point separately covers the whole disk without crossing into another one twice.
+orphans=""
+for root in "${scan_roots[@]}"; do
+    hits=$(find "$root" -xdev -uid "$UID_N" -print 2>/dev/null)
+    [ -n "$hits" ] && orphans="${orphans}${hits}"$'\n'
+done
+
 if [ -n "$orphans" ]; then
-  echo "$orphans" | sed 's/^/  ORPHAN: /'
+    echo "$orphans" | grep -v '^$' | sed 's/^/  ORPHAN: /'
 else
-  echo "  OK: no files left owned by UID $UID_N"
+    echo "  OK: no files left owned by UID $UID_N"
 fi
 
 echo
